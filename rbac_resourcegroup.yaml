@@ -1,0 +1,62 @@
+openapi: 3.0.1
+info:
+  title: Get Resource Group Permissions
+  version: 1.0.0
+paths:
+  "/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Authorization/roleAssignments":
+    get:
+      summary: List RBAC assignments for a Resource Group
+      parameters:
+        - name: subscriptionId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: resourceGroupName
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: api-version
+          in: query
+          required: true
+          schema:
+            type: string
+          example: 2022-04-01
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        name: { type: string }
+                        type: { type: string }
+                        properties:
+                          type: object
+                          properties:
+                            principalId: { type: string }
+                            roleDefinitionId: { type: string }
+                            scope: { type: string }
+                            principalType: { type: string }
+      security:
+        - azure_auth: []
+components:
+  securitySchemes:
+    azure_auth:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://login.microsoftonline.com/common/oauth2/authorize
+          tokenUrl: https://login.microsoftonline.com/common/oauth2/token
+          scopes:
+            Microsoft.Authorization/roleAssignments/read: Read role assignments
+            Microsoft.Authorization/roleDefinitions/read: Read role definitions
+            Microsoft.Resources/subscriptions/resourceGroups/read: Read RG metadata
