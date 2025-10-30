@@ -1,62 +1,67 @@
-openapi: 3.0.1
+openapi: 3.0.0
 info:
-  title: Get Resource Group Permissions
-  version: 1.0.0
+  title: Sentinel Access Review API
+  description: API endpoints for retrieving Azure RBAC role assignments and definitions used by Security Copilot Agent.
+  version: "1.0.0"
+
+servers:
+  - url: https://management.azure.com
+
 paths:
-  "/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Authorization/roleAssignments":
+  /subscriptions/{subscriptionId}/providers/Microsoft.Authorization/roleAssignments:
     get:
-      summary: List RBAC assignments for a Resource Group
+      operationId: GetRoleAssignments
+      summary: List all role assignments within a subscription.
+      description: |
+        Returns all current Azure RBAC role assignments scoped at the subscription or resource group level.
+        #ExamplePrompts Get current role assignments for this subscription
       parameters:
-        - name: subscriptionId
-          in: path
+        - in: path
+          name: subscriptionId
           required: true
           schema:
             type: string
-        - name: resourceGroupName
-          in: path
+            example: 3a683d84-be08-4356-bb14-3b62df1bad55
+        - in: query
+          name: api-version
           required: true
           schema:
             type: string
-        - name: api-version
-          in: query
-          required: true
-          schema:
-            type: string
-          example: 2022-04-01
+            example: 2022-04-01
       responses:
         "200":
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  value:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id: { type: string }
-                        name: { type: string }
-                        type: { type: string }
-                        properties:
-                          type: object
-                          properties:
-                            principalId: { type: string }
-                            roleDefinitionId: { type: string }
-                            scope: { type: string }
-                            principalType: { type: string }
-      security:
-        - azure_auth: []
-components:
-  securitySchemes:
-    azure_auth:
-      type: oauth2
-      flows:
-        authorizationCode:
-          authorizationUrl: https://login.microsoftonline.com/common/oauth2/authorize
-          tokenUrl: https://login.microsoftonline.com/common/oauth2/token
-          scopes:
-            Microsoft.Authorization/roleAssignments/read: Read role assignments
-            Microsoft.Authorization/roleDefinitions/read: Read role definitions
-            Microsoft.Resources/subscriptions/resourceGroups/read: Read RG metadata
+          description: Successful response with list of role assignments
+        "401":
+          description: Unauthorized access
+        "403":
+          description: Forbidden
+        "500":
+          description: Server error
+
+  /subscriptions/{subscriptionId}/providers/Microsoft.Authorization/roleDefinitions:
+    get:
+      operationId: GetRoleDefinitions
+      summary: List all role definitions within a subscription.
+      description: |
+        Retrieves metadata of role definitions, including names and permissions.
+        #ExamplePrompts Get Sentinel role definitions
+      parameters:
+        - in: path
+          name: subscriptionId
+          required: true
+          schema:
+            type: string
+            example: 3a683d84-be08-4356-bb14-3b62df1bad55
+        - in: query
+          name: api-version
+          required: true
+          schema:
+            type: string
+            example: 2022-04-01
+      responses:
+        "200":
+          description: Successful response with role definitions
+        "401":
+          description: Unauthorized
+        "500":
+          description: Internal error
