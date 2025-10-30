@@ -1,67 +1,134 @@
 openapi: 3.0.0
+
 info:
   title: Sentinel Access Review API
-  description: API endpoints for retrieving Azure RBAC role assignments and definitions used by Security Copilot Agent.
-  version: "1.0.0"
+  description: Retrieves current role assignments, role definitions, and directory roles from Microsoft Graph for Sentinel Access Review Agent.
+  version: "v1"
 
 servers:
-  - url: https://management.azure.com
+  - url: https://graph.microsoft.com/v1.0
 
 paths:
-  /subscriptions/{subscriptionId}/providers/Microsoft.Authorization/roleAssignments:
+  /roleManagement/directory/roleAssignments:
     get:
-      operationId: GetRoleAssignments
-      summary: List all role assignments within a subscription.
-      description: |
-        Returns all current Azure RBAC role assignments scoped at the subscription or resource group level.
-        #ExamplePrompts Get current role assignments for this subscription
-      parameters:
-        - in: path
-          name: subscriptionId
-          required: true
-          schema:
-            type: string
-            example: 3a683d84-be08-4356-bb14-3b62df1bad55
-        - in: query
-          name: api-version
-          required: true
-          schema:
-            type: string
-            example: 2022-04-01
+      operationId: GetDirectoryRoleAssignments
+      summary: Get current directory role assignments
+      description: Returns all role assignments including principal, role definition, and scope information.
       responses:
         "200":
-          description: Successful response with list of role assignments
-        "401":
-          description: Unauthorized access
-        "403":
-          description: Forbidden
-        "500":
-          description: Server error
+          description: Successful request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleAssignmentsResponse"
 
-  /subscriptions/{subscriptionId}/providers/Microsoft.Authorization/roleDefinitions:
+  /roleManagement/directory/roleDefinitions:
     get:
-      operationId: GetRoleDefinitions
-      summary: List all role definitions within a subscription.
-      description: |
-        Retrieves metadata of role definitions, including names and permissions.
-        #ExamplePrompts Get Sentinel role definitions
-      parameters:
-        - in: path
-          name: subscriptionId
-          required: true
-          schema:
-            type: string
-            example: 3a683d84-be08-4356-bb14-3b62df1bad55
-        - in: query
-          name: api-version
-          required: true
-          schema:
-            type: string
-            example: 2022-04-01
+      operationId: GetDirectoryRoleDefinitions
+      summary: Get directory role definitions
+      description: Retrieves a list of role definitions from Microsoft Entra ID.
       responses:
         "200":
-          description: Successful response with role definitions
-        "401":
-          description: Unauthorized
-        "500":
-          description: Internal error
+          description: Successful request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleDefinitionsResponse"
+
+  /users/{userId}/memberOf:
+    get:
+      operationId: GetUserMemberships
+      summary: Get a user’s group or directory role memberships
+      parameters:
+        - in: path
+          name: userId
+          schema:
+            type: string
+          required: true
+          description: The user object ID or UPN.
+      responses:
+        "200":
+          description: Successful request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserMembershipsResponse"
+
+components:
+  schemas:
+    RoleAssignmentsResponse:
+      type: object
+      properties:
+        value:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                description: Role assignment ID
+              principalId:
+                type: string
+                description: ID of the assigned principal (user, group, or service principal)
+              principalType:
+                type: string
+                description: Type of the principal
+              roleDefinitionId:
+                type: string
+                description: Linked role definition ID
+              directoryScopeId:
+                type: string
+                description: Directory or resource scope
+              createdDateTime:
+                type: string
+                format: date-time
+                description: Assignment creation timestamp
+
+    RoleDefinitionsResponse:
+      type: object
+      properties:
+        value:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                description: Role definition ID
+              displayName:
+                type: string
+                description: Role name
+              description:
+                type: string
+                description: Role description
+              isBuiltIn:
+                type: boolean
+                description: Indicates if the role is built-in
+              rolePermissions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    allowedResourceActions:
+                      type: array
+                      items:
+                        type: string
+                        description: Allowed actions under this role
+
+    UserMembershipsResponse:
+      type: object
+      properties:
+        value:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                description: Group or role ID
+              displayName:
+                type: string
+                description: Name of the group or role
+              type:
+                type: string
+                description: Type of membership (Group or DirectoryRole)
