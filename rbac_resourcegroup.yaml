@@ -2,7 +2,9 @@ openapi: 3.0.0
 
 info:
   title: Sentinel Access Review API
-  description: Retrieves current role assignments, role definitions, and directory roles from Microsoft Graph for Sentinel Access Review Agent.
+  description: >
+    Retrieves current role assignments, role definitions, and directory role or group
+    memberships from Microsoft Graph for use by the Sentinel Access Review Agent.
   version: "v1"
 
 servers:
@@ -13,7 +15,9 @@ paths:
     get:
       operationId: GetDirectoryRoleAssignments
       summary: Get current directory role assignments
-      description: Returns all role assignments including principal, role definition, and scope information.
+      description: >
+        Returns all directory role assignments from Microsoft Entra ID, including
+        principal, role definition, and scope information.
       responses:
         "200":
           description: Successful request
@@ -21,12 +25,17 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RoleAssignmentsResponse"
+        "401":
+          description: Unauthorized – invalid or missing token
+        "403":
+          description: Forbidden – insufficient permissions
 
   /roleManagement/directory/roleDefinitions:
     get:
       operationId: GetDirectoryRoleDefinitions
       summary: Get directory role definitions
-      description: Retrieves a list of role definitions from Microsoft Entra ID.
+      description: >
+        Retrieves the list of all available role definitions in Microsoft Entra ID.
       responses:
         "200":
           description: Successful request
@@ -34,18 +43,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RoleDefinitionsResponse"
+        "401":
+          description: Unauthorized – invalid or missing token
+        "403":
+          description: Forbidden – insufficient permissions
 
   /users/{userId}/memberOf:
     get:
       operationId: GetUserMemberships
-      summary: Get a user’s group or directory role memberships
+      summary: Get a user’s group or directory-role memberships
+      description: >
+        Retrieves groups or directory roles that the specified user belongs to.
       parameters:
         - in: path
           name: userId
           schema:
             type: string
           required: true
-          description: The user object ID or UPN.
+          description: The user’s object ID or UPN.
       responses:
         "200":
           description: Successful request
@@ -53,8 +68,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/UserMembershipsResponse"
+        "401":
+          description: Unauthorized – invalid or missing token
+        "403":
+          description: Forbidden – insufficient permissions
 
 components:
+  securitySchemes:
+    AAD:
+      type: oauth2
+      description: Microsoft Entra ID OAuth 2.0 Client Credentials Flow
+      flows:
+        clientCredentials:
+          tokenUrl: https://login.microsoftonline.com/common/oauth2/v2.0/token
+          scopes:
+            https://graph.microsoft.com/.default: Access Microsoft Graph resources
+
   schemas:
     RoleAssignmentsResponse:
       type: object
@@ -66,23 +95,23 @@ components:
             properties:
               id:
                 type: string
-                description: Role assignment ID
+                description: Role assignment ID.
               principalId:
                 type: string
-                description: ID of the assigned principal (user, group, or service principal)
+                description: ID of the assigned principal (user, group, or service principal).
               principalType:
                 type: string
-                description: Type of the principal
+                description: Type of the principal.
               roleDefinitionId:
                 type: string
-                description: Linked role definition ID
+                description: Linked role definition ID.
               directoryScopeId:
                 type: string
-                description: Directory or resource scope
+                description: Directory or resource scope.
               createdDateTime:
                 type: string
                 format: date-time
-                description: Assignment creation timestamp
+                description: Assignment creation timestamp.
 
     RoleDefinitionsResponse:
       type: object
@@ -94,16 +123,16 @@ components:
             properties:
               id:
                 type: string
-                description: Role definition ID
+                description: Role definition ID.
               displayName:
                 type: string
-                description: Role name
+                description: Role display name.
               description:
                 type: string
-                description: Role description
+                description: Role description.
               isBuiltIn:
                 type: boolean
-                description: Indicates if the role is built-in
+                description: Indicates whether the role is built-in.
               rolePermissions:
                 type: array
                 items:
@@ -113,7 +142,7 @@ components:
                       type: array
                       items:
                         type: string
-                        description: Allowed actions under this role
+                        description: Allowed resource actions for this role.
 
     UserMembershipsResponse:
       type: object
@@ -125,10 +154,13 @@ components:
             properties:
               id:
                 type: string
-                description: Group or role ID
+                description: Group or directory role ID.
               displayName:
                 type: string
-                description: Name of the group or role
+                description: Name of the group or directory role.
               type:
                 type: string
-                description: Type of membership (Group or DirectoryRole)
+                description: Type of membership (Group or DirectoryRole).
+
+security:
+  - AAD: [ https://graph.microsoft.com/.default ]
