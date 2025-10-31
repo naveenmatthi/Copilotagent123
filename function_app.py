@@ -164,11 +164,11 @@ def handle_gz_files(bucket, key, sent_timestamp_ms, raw_bytes):
                 
                 output.append(parsed_data)
         
-        logger.info(f"Processed {total_logs} logs from {key}, kept {len(output)} recent logs (filtered {filtered_logs} old logs)")
-        return output
+        logger.info(f"File {key}: total={total_logs}, kept={len(output)}, filtered={filtered_logs}")
+        return output, filtered_logs
         
     except Exception as e:
-        logger.error(f"Error processing gzip file {key}: {e}")
+        logger.error(f"Error processing gzip file {key}: {e}", exc_info=True)
         raise
 
 
@@ -197,22 +197,22 @@ def handle_json_files(bucket, key, event_time, raw_bytes):
                 parsed_data['Event_Time'] = event_time
                 output.append(parsed_data)
             
-            logger.info(f"Processed {total_logs} logs from {key}, kept {len(output)} recent logs (filtered {filtered_logs} old logs)")
-            return output
+            logger.info(f"File {key}: total={total_logs}, kept={len(output)}, filtered={filtered_logs}")
+            return output, filtered_logs
         else:
             # Single JSON object
             if not is_recent_log(data, minutes=RECENT_LOGS_MINUTES):
                 logger.info(f"Skipping old log from {key}")
-                return []
+                return [], 1
             
             parsed_data = parse_nested_json(data)
             parsed_data['Bucket_Name'] = bucket
             parsed_data['Key'] = key
             parsed_data['Event_Time'] = event_time
-            return [parsed_data]
+            return [parsed_data], 0
             
     except Exception as e:
-        logger.error(f"Error processing JSON file {key}: {e}")
+        logger.error(f"Error processing JSON file {key}: {e}", exc_info=True)
         raise
 
 
@@ -323,7 +323,7 @@ def is_recent_log(log_entry, minutes=5):
         is_recent = time_diff.total_seconds() <= (minutes * 60)
         
         if not is_recent:
-            logger.debug(f"Skipping old log: {timestamp_str} (age: {time_diff.total_seconds():.0f}s)")
+            logger.info(f"Skipping old log - not ingested: @timestamp={timestamp_str}, age={time_diff.total_seconds():.0f}s (threshold: {minutes * 60}s)")
         
         return is_recent
         
@@ -352,7 +352,7 @@ def process_s3_file(s3_client, record):
 
         if not key:
             logger.warning("Missing S3 key in record.")
-            return []
+            return [], 0
 
         # Get file metadata
         size, last_modified_time = get_s3_file_metadata(s3_client, bucket, key)
@@ -365,25 +365,25 @@ def process_s3_file(s3_client, record):
 
         # Process based on file type
         if key.endswith('.gz'):
-            payload = handle_gz_files(bucket, key, event_time, content)
+            payload, filtered = handle_gz_files(bucket, key, event_time, content)
         elif key.endswith('.json'):
-            payload = handle_json_files(bucket, key, event_time, content)
+            payload, filtered = handle_json_files(bucket, key, event_time, content)
         else:
             logger.warning(f'Unsupported file type: {key}')
-            return []
+            return [], 0
 
         # Normalize payload to list
         if isinstance(payload, list):
-            return payload
+            return payload, filtered
         elif isinstance(payload, dict):
-            return [payload]
+            return [payload], filtered
         else:
             logger.warning("Unexpected payload type.")
-            return []
+            return [], filtered
 
     except Exception as e:
-        logger.error(f"Error processing S3 file {record.get('Object Key')}: {e}")
-        return []
+        logger.error(f"Error processing S3 file {record.get('Object Key')}: {e}", exc_info=True)
+        return [], 0
 
 
 # --- Azure Log Analytics ---
@@ -467,29 +467,60 @@ def code42_sqs_to_loganalytics(myTimer: func.TimerRequest) -> None:
     Runs every 5 minutes with timeout handling
     Only processes logs from the last 5 minutes based on @timestamp field
     """
-    start_time = datetime.now(timezone.utc)
-    logger.info(f'Function triggered at {start_time}')
-    logger.info(f'Processing logs from last {RECENT_LOGS_MINUTES} minutes only')
-
-    if myTimer.past_due:
-        logger.warning('The timer is past due!')
-
     try:
+        start_time = datetime.now(timezone.utc)
+        logger.info('='*50)
+        logger.info(f'Function triggered at {start_time}')
+        logger.info(f'Processing logs from last {RECENT_LOGS_MINUTES} minutes only')
+        logger.info('='*50)
+
+        if myTimer.past_due:
+            logger.warning('The timer is past due!')
+
         # Load configuration
+        logger.info('Loading environment variables...')
         role_arn, queue_url, region, bucket_name = load_from_env_variables()
+        
+        # Validate required environment variables
+        required_vars = {
+            'AWS_ROLE_ARN': role_arn,
+            'C42_SQS_QUEUE_URL': queue_url,
+            'LOG_ANALYTICS_WORKSPACE_ID': os.environ.get('LOG_ANALYTICS_WORKSPACE_ID'),
+            'LOG_ANALYTICS_SHARED_KEY': os.environ.get('LOG_ANALYTICS_SHARED_KEY'),
+            'C42_LOG_ANALYTICS_TABLE': os.environ.get('C42_LOG_ANALYTICS_TABLE')
+        }
+        
+        missing_vars = [k for k, v in required_vars.items() if not v]
+        if missing_vars:
+            error_msg = f"Missing required environment variables: {', '.join(missing_vars)}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        logger.info('All required environment variables present')
+        logger.info('All required environment variables present')
+        
         # Get AWS credentials
+        logger.info('Authenticating to AWS using Managed Identity...')
         creds = get_aws_credentials_from_oidc(role_arn)
+        logger.info('AWS authentication successful')
+        
+        # Create AWS clients
+        logger.info('Creating AWS clients...')
         s3 = create_s3_client(creds, region)
         sqs = create_sqs_client(creds, region)
+        logger.info('AWS clients created successfully')
 
         sqs_msg_count = 0
         total_records = 0
         total_messages_deleted = 0
+        total_old_logs_filtered = 0
 
         # Create thread pool for parallel S3 operations
+        logger.info(f'Creating thread pool with {PARALLEL_S3_OPERATIONS} workers...')
         executor = ThreadPoolExecutor(max_workers=PARALLEL_S3_OPERATIONS)
 
         # Process messages until timeout or queue empty
+        logger.info('Starting message processing loop...')
         while True:
             # Check if we're approaching timeout
             elapsed_time = (datetime.now(timezone.utc) - start_time).total_seconds()
@@ -538,10 +569,11 @@ def code42_sqs_to_loganalytics(myTimer: func.TimerRequest) -> None:
                     # Collect results
                     for future in futures:
                         try:
-                            result = future.result(timeout=60)  # 60 second timeout per file
+                            result, filtered_count = future.result(timeout=60)  # 60 second timeout per file
                             log_entries.extend(result)
+                            total_old_logs_filtered += filtered_count
                         except Exception as e:
-                            logger.error(f"Error processing S3 file in parallel: {e}")
+                            logger.error(f"Error processing S3 file in parallel: {e}", exc_info=True)
 
                     # Send to Log Analytics if we have data
                     if log_entries:
@@ -568,11 +600,22 @@ def code42_sqs_to_loganalytics(myTimer: func.TimerRequest) -> None:
 
         # Final summary
         execution_time = (datetime.now(timezone.utc) - start_time).total_seconds()
-        logger.info(f"Function execution completed in {execution_time:.2f} seconds")
-        logger.info(f"Total SQS messages processed: {sqs_msg_count}")
-        logger.info(f"Total SQS messages deleted: {total_messages_deleted}")
-        logger.info(f"Total log records sent: {total_records}")
+        logger.info('='*50)
+        logger.info('EXECUTION SUMMARY')
+        logger.info('='*50)
+        logger.info(f"Execution time: {execution_time:.2f} seconds")
+        logger.info(f"SQS messages processed: {sqs_msg_count}")
+        logger.info(f"SQS messages deleted: {total_messages_deleted}")
+        logger.info(f"Log records sent to Log Analytics: {total_records}")
+        logger.info(f"Old logs filtered (not ingested): {total_old_logs_filtered}")
+        logger.info('='*50)
+        logger.info('Function completed successfully')
 
+    except ValueError as ve:
+        logger.error(f"Configuration error: {ve}", exc_info=True)
+        raise
     except Exception as e:
-        logger.error(f"Fatal error in function execution: {e}")
+        logger.error(f"Fatal error in function execution: {e}", exc_info=True)
+        logger.error(f"Error type: {type(e).__name__}")
+        logger.error(f"Error details: {str(e)}")
         raise
