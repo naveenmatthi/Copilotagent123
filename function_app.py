@@ -26,10 +26,10 @@ logger = logging.getLogger(__name__)
 app = func.FunctionApp()
 
 # Constants for timeout management
-MAX_EXECUTION_TIME_SECONDS = 270  # 4.5 minutes (leave buffer before 5 min timeout)
+MAX_EXECUTION_TIME_SECONDS = 240  # 4 minutes (leave buffer before 5 min timeout)
 MAX_RETRIES = 3
 PARALLEL_S3_OPERATIONS = 5  # Process 5 S3 files concurrently
-START_OF_DAY = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+RECENT_LOGS_MINUTES = 5  # Only process logs from last 5 minutes
 
 
 def load_from_env_variables():
@@ -134,33 +134,206 @@ def s3_read_file_to_bytes(s3_client, bucket, key):
 
 
 def handle_gz_files(bucket, key, sent_timestamp_ms, raw_bytes):
-    """Decompress and parse gzip files"""
+    """Decompress and parse gzip files, filtering for recent logs only"""
     logger.info(f"Decompressing Gzip file: {key}")
     output = []
+    total_logs = 0
+    filtered_logs = 0
+    
     try:
         with gzip.GzipFile(fileobj=BytesIO(raw_bytes)) as gz:
             for line in gz.read().decode('utf-8').split('\n'):
                 if not line.strip():
                     continue
-                transformed_data = transform_to_standard_schema(
-                    bucket, key, sent_timestamp_ms, json.loads(line)
-                )
-                output.append(transformed_data)
+                
+                total_logs += 1
+                log_entry = json.loads(line)
+                
+                # Filter: Only process logs from last 5 minutes
+                if not is_recent_log(log_entry, minutes=RECENT_LOGS_MINUTES):
+                    filtered_logs += 1
+                    continue
+                
+                # Parse nested JSON structure
+                parsed_data = parse_nested_json(log_entry)
+                
+                # Add metadata
+                parsed_data['Bucket_Name'] = bucket
+                parsed_data['Key'] = key
+                parsed_data['Event_Time'] = sent_timestamp_ms
+                
+                output.append(parsed_data)
+        
+        logger.info(f"Processed {total_logs} logs from {key}, kept {len(output)} recent logs (filtered {filtered_logs} old logs)")
         return output
+        
     except Exception as e:
         logger.error(f"Error processing gzip file {key}: {e}")
         raise
 
 
 def handle_json_files(bucket, key, event_time, raw_bytes):
-    """Parse JSON files"""
+    """Parse JSON files, filtering for recent logs only"""
     logger.info(f"Processing JSON file: {key}")
     try:
         data = json.loads(raw_bytes)
-        return transform_to_standard_schema(bucket, key, event_time, data)
+        
+        # Handle both single object and array of objects
+        if isinstance(data, list):
+            output = []
+            total_logs = len(data)
+            filtered_logs = 0
+            
+            for log_entry in data:
+                # Filter: Only process logs from last 5 minutes
+                if not is_recent_log(log_entry, minutes=RECENT_LOGS_MINUTES):
+                    filtered_logs += 1
+                    continue
+                
+                # Parse nested JSON structure
+                parsed_data = parse_nested_json(log_entry)
+                parsed_data['Bucket_Name'] = bucket
+                parsed_data['Key'] = key
+                parsed_data['Event_Time'] = event_time
+                output.append(parsed_data)
+            
+            logger.info(f"Processed {total_logs} logs from {key}, kept {len(output)} recent logs (filtered {filtered_logs} old logs)")
+            return output
+        else:
+            # Single JSON object
+            if not is_recent_log(data, minutes=RECENT_LOGS_MINUTES):
+                logger.info(f"Skipping old log from {key}")
+                return []
+            
+            parsed_data = parse_nested_json(data)
+            parsed_data['Bucket_Name'] = bucket
+            parsed_data['Key'] = key
+            parsed_data['Event_Time'] = event_time
+            return [parsed_data]
+            
     except Exception as e:
         logger.error(f"Error processing JSON file {key}: {e}")
         raise
+
+
+def parse_nested_json(log_entry):
+    """
+    Parse and flatten nested JSON log entry from Code42
+    Extracts key fields from nested structures for easier querying in Log Analytics
+    """
+    parsed = {}
+    
+    try:
+        # Timestamp - critical field
+        parsed['Timestamp'] = log_entry.get('@timestamp', '')
+        
+        # Event fields (flattened)
+        event = log_entry.get('event', {})
+        parsed['Event_ID'] = event.get('id', '')
+        parsed['Event_Action'] = event.get('action', '')
+        parsed['Event_Observer'] = event.get('observer', '')
+        parsed['Event_Inserted'] = event.get('inserted', '')
+        parsed['Event_Ingested'] = event.get('ingested', '')
+        parsed['Event_Vector'] = event.get('vector', '')
+        
+        # User fields (flattened)
+        user = log_entry.get('user', {})
+        parsed['User_Email'] = user.get('email', '')
+        parsed['User_ID'] = user.get('id', '')
+        parsed['User_DeviceUID'] = user.get('deviceUid', '')
+        parsed['User_Department'] = user.get('department', '')
+        parsed['User_Groups'] = json.dumps(user.get('groups', [])) if user.get('groups') else ''
+        
+        # File fields (flattened)
+        file_info = log_entry.get('file', {})
+        parsed['File_Name'] = file_info.get('name', '')
+        parsed['File_Directory'] = file_info.get('directory', '')
+        parsed['File_Category'] = file_info.get('category', '')
+        parsed['File_MimeType'] = file_info.get('mimeTypeByExtension', file_info.get('mimeType', ''))
+        parsed['File_SizeInBytes'] = file_info.get('sizeInBytes', 0)
+        parsed['File_Owner'] = file_info.get('owner', '')
+        parsed['File_ChangeType'] = file_info.get('changeType', '')
+        
+        # File hash
+        file_hash = file_info.get('hash', {})
+        parsed['File_Hash_MD5'] = file_hash.get('md5', '')
+        parsed['File_Hash_SHA256'] = file_hash.get('sha256', '')
+        
+        # Source fields (flattened)
+        source = log_entry.get('source', {})
+        parsed['Source_Category'] = source.get('category', '')
+        parsed['Source_Name'] = source.get('name', '')
+        parsed['Source_Domain'] = source.get('domain', '')
+        parsed['Source_IP'] = source.get('ip', '')
+        parsed['Source_PrivateIP'] = json.dumps(source.get('privateIp', [])) if source.get('privateIp') else ''
+        parsed['Source_OS'] = source.get('operatingSystem', '')
+        
+        # Destination fields (flattened)
+        destination = log_entry.get('destination', {})
+        parsed['Destination_Category'] = destination.get('category', '')
+        parsed['Destination_Name'] = destination.get('name', '')
+        parsed['Destination_IP'] = destination.get('ip', '')
+        
+        # Process fields
+        process = log_entry.get('process', {})
+        parsed['Process_Executable'] = process.get('executable', '')
+        parsed['Process_Owner'] = process.get('owner', '')
+        
+        # Risk fields (flattened)
+        risk = log_entry.get('risk', {})
+        parsed['Risk_Score'] = risk.get('score', 0)
+        parsed['Risk_Severity'] = risk.get('severity', '')
+        parsed['Risk_Indicators'] = json.dumps(risk.get('indicators', [])) if risk.get('indicators') else ''
+        parsed['Risk_Trusted'] = risk.get('trusted', False)
+        
+        # Response controls
+        response_controls = log_entry.get('responseControls', {})
+        parsed['Response_PreventativeControl'] = response_controls.get('preventativeControl', '')
+        parsed['Response_Reason'] = response_controls.get('reason', '')
+        
+        # Keep original raw data for reference
+        parsed['Raw_Data'] = json.dumps(log_entry)
+        
+    except Exception as e:
+        logger.error(f"Error parsing nested JSON: {e}")
+        # If parsing fails, store as raw
+        parsed['Raw_Data'] = json.dumps(log_entry)
+        parsed['Parse_Error'] = str(e)
+    
+    return parsed
+
+
+def is_recent_log(log_entry, minutes=5):
+    """
+    Check if log entry is from the last N minutes based on @timestamp
+    Returns True if log is recent, False otherwise
+    """
+    try:
+        timestamp_str = log_entry.get('@timestamp')
+        if not timestamp_str:
+            logger.warning("Log entry missing @timestamp field")
+            return False
+        
+        # Parse ISO 8601 timestamp
+        log_timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+        
+        # Get current time
+        current_time = datetime.now(timezone.utc)
+        
+        # Calculate time difference
+        time_diff = current_time - log_timestamp
+        
+        # Check if within the specified minutes
+        is_recent = time_diff.total_seconds() <= (minutes * 60)
+        
+        if not is_recent:
+            logger.debug(f"Skipping old log: {timestamp_str} (age: {time_diff.total_seconds():.0f}s)")
+        
+        return is_recent
+        
+    except Exception as e:
+        logger.error(f"Error checking log timestamp: {e}")
+        return False  # Skip logs with invalid timestamps
 
 
 def transform_to_standard_schema(bucket_name, prefix_key, event_time, json_data):
@@ -188,10 +361,8 @@ def process_s3_file(s3_client, record):
         # Get file metadata
         size, last_modified_time = get_s3_file_metadata(s3_client, bucket, key)
 
-        # Skip old files
-        if (START_OF_DAY - last_modified_time).days > 0:
-            logger.info(f"Skipping file {key} as it is older than today.")
-            return []
+        # Log file info
+        logger.info(f"Processing file {key}, size: {size:.2f} KB, modified: {last_modified_time}")
 
         # Read file content
         content = s3_read_file_to_bytes(s3_client, bucket, key)
@@ -293,14 +464,16 @@ def send_to_log_analytics(data_as_list):
 
 
 # --- Main Function (V2) ---
-@app.timer_trigger(schedule="0 */30 * * * *", arg_name="myTimer", run_on_startup=False, use_monitor=False)
+@app.timer_trigger(schedule="0 */5 * * * *", arg_name="myTimer", run_on_startup=False, use_monitor=False)
 def code42_sqs_to_loganalytics(myTimer: func.TimerRequest) -> None:
     """
     Azure Function V2 - Poll SQS and send S3 file contents to Log Analytics
-    Runs every 30 minutes with timeout handling
+    Runs every 5 minutes with timeout handling
+    Only processes logs from the last 5 minutes based on @timestamp field
     """
     start_time = datetime.now(timezone.utc)
     logger.info(f'Function triggered at {start_time}')
+    logger.info(f'Processing logs from last {RECENT_LOGS_MINUTES} minutes only')
 
     if myTimer.past_due:
         logger.warning('The timer is past due!')
