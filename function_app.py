@@ -291,13 +291,9 @@ def parse_nested_json(log_entry):
         parsed['Response_PreventativeControl'] = response_controls.get('preventativeControl', '')
         parsed['Response_Reason'] = response_controls.get('reason', '')
         
-        # Keep original raw data for reference
-        parsed['Raw_Data'] = json.dumps(log_entry)
-        
     except Exception as e:
         logger.error(f"Error parsing nested JSON: {e}")
-        # If parsing fails, store as raw
-        parsed['Raw_Data'] = json.dumps(log_entry)
+        # If parsing fails, log the error
         parsed['Parse_Error'] = str(e)
     
     return parsed
@@ -481,7 +477,6 @@ def code42_sqs_to_loganalytics(myTimer: func.TimerRequest) -> None:
     try:
         # Load configuration
         role_arn, queue_url, region, bucket_name = load_from_env_variables()
-
         # Get AWS credentials
         creds = get_aws_credentials_from_oidc(role_arn)
         s3 = create_s3_client(creds, region)
